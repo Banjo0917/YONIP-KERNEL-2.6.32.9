@@ -113,9 +113,6 @@ int s3c_g2d_check_fifo(int empty_fifo)
 {
 	int count = 0;
 
-//	while((__raw_readl(s3c_g2d_base + S3C_G2D_FIFO_STAT_REG)&0x3f) > (FIFO_NUM - empty_fifo) );
-//	while((((__raw_readl(s3c_g2d_base + S3C_G2D_FIFO_STAT_REG)&0x7e) >> 1)) > (FIFO_NUM - empty_fifo) );
-
 	while((((__raw_readl(s3c_g2d_base + S3C_G2D_FIFO_STAT_REG)&0x7e) >> 1)) > (FIFO_NUM - empty_fifo) && count < G2D_CHECK_FIFO_COUNT)
 		count++;
 	if (count == G2D_CHECK_FIFO_COUNT)
@@ -200,7 +197,7 @@ static int s3c_g2d_init_regs(s3c_g2d_params *params)
 			break;
 		}
 		alpha_reg |= S3C_G2D_ROP_REG_ABM_REGISTER |  G2D_ROP_SRC_ONLY;
-		//__raw_writel(S3C_G2D_ROP_REG_OS_FG_COLOR | S3C_G2D_ROP_REG_ABM_REGISTER |  S3C_G2D_ROP_REG_T_OPAQUE_MODE | G2D_ROP_SRC_ONLY, s3c_g2d_base + S3C_G2D_ROP_REG);
+
 		if(params->alpha_val > ALPHA_VALUE_MAX){
 			printk(KERN_ALERT"s3c g2d dirver error: exceed alpha value range 0~255\n");
                	 return -ENOENT;
