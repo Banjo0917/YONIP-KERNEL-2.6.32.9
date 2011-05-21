@@ -95,6 +95,11 @@ EXPORT_SYMBOL(sec_get_param_value);
 
 
 void infobowlq_init_gpio(void);
+
+extern void (*ftm_enable_usb_sw)(int mode);
+extern void fsa9480_SetAutoSWMode(void);
+extern void fsa9480_MakeRxdLow(void);
+
 #ifdef DUMP_GPIO_DEBUG_INFO
 void s3c_dump_gpio(void);
 #endif
@@ -479,7 +484,7 @@ static void infobowlq_set_qos(void) {
 	u32 reg;     							/* AXI sfr */     
 
 	reg = (u32) ioremap((unsigned long) S3C6410_PA_AXI_SYS, SZ_4K); /* QoS override: FIMD min. latency */
-	writel(0xffb6, S3C_VA_SYS + 0x128);  	    			/* AXI QoS */
+	writel(0xffb6, S3C_VA_SYS + 0x128);  	    			/* AXI QoS 0xffb6*/
 	writel(0x7, reg + 0x460);   					/* (8 - MFC ch.) */
 	writel(0x7ff7, reg + 0x464);      				/* Bus cacheable */
 	writel(0x8ff, S3C_VA_SYS + 0x838);
@@ -590,6 +595,18 @@ static void infobowlq_pm_power_off(void) {
 	}
 
 	while (1);
+}
+
+static void infobowlq_ftm_enable_usb_sw(int mode)
+{
+	pr_info("%s: mode(%d)\n", __func__, mode);
+	if (mode) {
+		fsa9480_SetAutoSWMode();
+	} else {
+		fsa9480_MakeRxdLow();
+		mdelay(10);
+		fsa9480_MakeRxdLow();
+	}
 }
 
 static int uart_current_owner = 0;
@@ -758,6 +775,8 @@ static void __init infobowlq_machine_init(void) {
 	register_reboot_notifier(&infobowlq_reboot_notifier);
 
 	infobowlq_switch_init();
+
+        ftm_enable_usb_sw = infobowlq_ftm_enable_usb_sw;
 
 #ifdef CONFIG_SEC_LOG_BUF
 	sec_log_buf_init();
@@ -1208,15 +1227,13 @@ static void check_pmic(void) {
 		pr_info("  %s: VLED 3.3V (%d)\n", __func__, reg_buff);
 	}
 	if (Get_MAX8698_PM_REG(ELDO5, &reg_buff)) {
-		pr_info("  %s: VTF 3.0V (%d)\n", __func__, reg_buff);
-		if (reg_buff)
-			Set_MAX8698_PM_REG(ELDO5, 0);
+		pr_info("  %s: MMC 3.0V (%d)\n", __func__, reg_buff);
 	}
 	if (Get_MAX8698_PM_REG(ELDO6, &reg_buff)) {
 		pr_info("  %s: VLCD 1.8V (%d)\n", __func__, reg_buff);
 	}
 	if (Get_MAX8698_PM_REG(ELDO7, &reg_buff)) {
-		pr_info("  %s: VLCD 3.0V (%d)\n", __func__, reg_buff);
+		pr_info("  %s: VLCD 2.8V (%d)\n", __func__, reg_buff);
 	}
 	if (Get_MAX8698_PM_REG(ELDO8, &reg_buff)) {
 		pr_info("  %s: OTG 3.3V (%d)\n", __func__, reg_buff);
@@ -1244,7 +1261,8 @@ void s3c_config_sleep_gpio(void) {
 }
 EXPORT_SYMBOL(s3c_config_sleep_gpio);
 
-void s3c_config_wakeup_gpio(void) {
+void s3c_config_wakeup_gpio(void)
+{
 	unsigned char reg_buff = 0;
 	if (Get_MAX8698_PM_REG(ELDO5, &reg_buff)) {
 		pr_info("%s: VTF 3.0V (%d)\n", __func__, reg_buff);
@@ -1254,148 +1272,43 @@ void s3c_config_wakeup_gpio(void) {
 }
 EXPORT_SYMBOL(s3c_config_wakeup_gpio);
 
-extern unsigned char ftm_sleep;
-
-#ifdef CONFIG_SEC_HEADSET
-extern short int get_headset_status();
-#else
-short int get_headset_status(){return 1;}
-#endif
-
-
-
-#if 0
-void s3c_config_wakeup_source(void) {
+void s3c_config_wakeup_source(void)
+{
 	unsigned int eint0pend_val;
 
-	/* Power key (GPN5) */
-	s3c_gpio_cfgpin(S3C64XX_GPN(5), S3C64XX_GPN5_EINT5);
-	s3c_gpio_setpull(S3C64XX_GPN(5), S3C_GPIO_PULL_NONE);
-	__raw_writel((__raw_readl(S3C64XX_EINT0CON0) & ~(0x7 << 8)) |
-			(S3C64XX_EXTINT_BOTHEDGE << 8), S3C64XX_EINT0CON0);
-
 	/* Wake-up source 
-	 * ONEDRAM_INT(EINT0), WLAN_HOST_WAKE(EINT1) HALL_SW(EINT4), Power key(EINT5),
-	 * T_FLASH(EINT6), DET_35(EINT10), EAR_SEND_END(EINT11), Hold key(EINT17), 
-	 * TA_CONNECTED(EINT19),PROXIMITY_SENSOR(EINT20),
+	 * ONEDRAM_INT(EINT0), Power key(EINT5), WLAN_HOST_WAKE(EINT1), 
+	 * DET_3.5(EINT10), EAR_SEND_END(EINT11), SIM_nDETECT(EINT4), T_FLASH_DETECT(EINT6)
+	 * Hold key(EINT17), TA_CONNECTED(EINT19),
 	 * BT_HOST_WAKE(EINT22), CHG_ING(EINT25)
+	 * T_FLASH_DETECT(EINT6), 
 	 */
 
 	//SEC_BP_WONSUK_20090811
 	//register INTB(EINT9) with wakeup source 
-	eint0pend_val = __raw_readl(S3C64XX_EINT0PEND);
-
-       //[[HYH_20100512
-	if(system_rev < 0x80)
-	{
-		if(get_headset_status()==0)//hw bug
-			eint0pend_val |= (0x1 << 25) | (0x1 << 22) |(0x1 << 20) |  (0x1 << 19) | (0x1 << 17) |
-       				(0x1 << 10) | (0x1 << 9) |(0x1 << 6) | (0x1 << 5) | (0x1 << 4) | (0x1 << 1) |  0x1;
-		else
-			eint0pend_val |= (0x1 << 25) | (0x1 << 22) |(0x1 << 20) |  (0x1 << 19) | 
-       				(0x1 << 11) | (0x1 << 10) | (0x1 << 9) |(0x1 << 6) | (0x1 << 5) | (0x1 << 4) | (0x1 << 1) | 0x1;
-	}
-	else
-	{
-		if(get_headset_status()==0)//hw bug
-			eint0pend_val |= (0x1 << 25) | (0x1 << 22) |(0x1 << 20) |  (0x1 << 19) | (0x1 << 17) |
-				(0x1 << 10) | (0x1 << 9) |(0x1 << 6) |  (0x1 << 5) | (0x1 << 4) | (0x1 << 1) |  0x1;
-		else
-			eint0pend_val |= (0x1 << 25) | (0x1 << 22) |(0x1 << 21) |(0x1 << 20) |  (0x1 << 19) | 
-				(0x1 << 11) | (0x1 << 10) | (0x1 << 9) |(0x1 << 6) | (0x1 << 5) | (0x1 << 4) | (0x1 << 1) | 0x1;
-	}
-	//]]HYH_20100512
-	
-	__raw_writel(eint0pend_val, S3C64XX_EINT0PEND);
-
-	//[[HYH_20100512
-	if(system_rev < 0x80)
-	{
-		if(get_headset_status()==0)//hw bug
-			eint0pend_val = (0x1 << 25) | (0x1 << 22) | (0x1 << 20) | (0x1 << 19) | (0x1 << 17) |
-				(0x1 << 10) | (0x1 << 9) |(0x1 << 6) | (0x1 << 5) | (0x1 << 4) | (0x1 << 1) | 0x1;
-		else
-			eint0pend_val = (0x1 << 25) | (0x1 << 22) | (0x1 << 20) | (0x1 << 19) |
-				(0x1 << 11) | (0x1 << 10) | (0x1 << 9) |(0x1 << 6) | (0x1 << 5) | (0x1 << 4) | (0x1 << 1) | 0x1;
-	}
-	else
-	{
-		if(get_headset_status()==0)//hw bug
-			eint0pend_val = (0x1 << 25) | (0x1 << 22) | (0x1 << 20) | (0x1 << 19) | (0x1 << 17) | 
-				(0x1 << 10) | (0x1 << 9) |(0x1 << 6) | (0x1 << 5) | (0x1 << 4) | (0x1 << 1) | 0x1;
-		else
-			eint0pend_val = (0x1 << 25) | (0x1 << 22) |(0x1 << 21) | (0x1 << 20) | (0x1 << 19) | 
-				(0x1 << 11) | (0x1 << 10) | (0x1 << 9) |(0x1 << 6) | (0x1 << 5) | (0x1 << 4) | (0x1 << 1) | 0x1;
-	}
-	//]]HYH_20100512
-	
-	__raw_writel(~eint0pend_val, S3C64XX_EINT0MASK);
-
-	__raw_writel((0x0FFFFFFF & ~eint0pend_val), S3C_EINT_MASK);
-
-	/* Alarm Wakeup Enable */
-	if (!ftm_sleep)
-		__raw_writel((__raw_readl(S3C_PWR_CFG) & ~(0x1 << 10)), S3C_PWR_CFG);
-	else {
-		pr_info("%s: RTC alarm is disabled\n", __func__);
-		__raw_writel((__raw_readl(S3C_PWR_CFG) | (0x1 << 10)), S3C_PWR_CFG);
-	}
-}
-#else
-void s3c_config_wakeup_source(void) {
-	unsigned int eint0pend_val;
-
-	/* Power key (GPN5) */
-	s3c_gpio_cfgpin(GPIO_POWER_N, S3C64XX_GPN5_EINT5);
-	s3c_gpio_setpull(GPIO_POWER_N, S3C_GPIO_PULL_NONE);
-	__raw_writel((__raw_readl(S3C64XX_EINT0CON0) & ~(0x7 << 8)) |
-			(S3C64XX_EXTINT_BOTHEDGE << 8), S3C64XX_EINT0CON0);
-
-	/* Wake-up source 
-	 * ONEDRAM_INT    (EINT0), 
-	 * WLAN_HOST_WAKE (EINT1), 
-	 * SIM_nDETECT    (EINT4),
-	 * Power key      (EINT5), 
-	 * T_FLASH_DETECT (EINT6),
-	 * DET_3.5        (EINT10), 
-	 * EAR_SEND_END   (EINT11), 
-	 * Hold key       (EINT17), 
-	 * TA_CONNECTED   (EINT19),
-	 * BT_HOST_WAKE   (EINT22), 
-	 * CHG_ING        (EINT25)
-	 */
-
-	//SEC_BP_WONSUK_20090811
-	//register INTB(EINT9) with wakeup source 
-	
-	// WLAN_HOST_WAKE(EINT1) Wake-up Source disable temporary by hskang
+#if 0
 	eint0pend_val= __raw_readl(S3C64XX_EINT0PEND);
 	eint0pend_val |= (0x1 << 25) | (0x1 << 22) | (0x1 << 19) |
-		(0x1 << 17) | (0x1 << 11) | (0x1 << 10) | (0x1 << 9) | (0x1 << 6) | (0x1 << 5) | (0x1 << 4) /*| (0x1 << 1)*/ | 0x1;
+		(0x1 << 17) | (0x1 << 11) | (0x1 << 10) | (0x1 << 9)| (0x1 << 6) |(0x1 << 5) | (0x1 << 4) |(0x1 << 1) | 0x1;
 	__raw_writel(eint0pend_val, S3C64XX_EINT0PEND);
 
-	eint0pend_val  = (0x1 << 25) | (0x1 << 22) | (0x1 << 19) |
-		(0x1 << 17) | (0x1 << 11) | (0x1 << 10) | (0x1 << 9) | (0x1 << 6) | (0x1 << 5) | (0x1 << 4) /*| (0x1 << 1)*/ | 0x1;
+	eint0pend_val = (0x1 << 25) | (0x1 << 22) | (0x1 << 19) |
+		(0x1 << 17) | (0x1 << 11) | (0x1 << 10) |  (0x1 << 9)| (0x1 << 6) |(0x1 << 5) | (0x1 << 4) | (0x1 << 1) | 0x1;
 	__raw_writel(~eint0pend_val, S3C64XX_EINT0MASK);
 
-	__raw_writel((0x0FFFFFFF & ~eint0pend_val), S3C_EINT_MASK);
+#else	// WLAN_HOST_WAKE(EINT1) Wake-up Source disable temporary by hskang.
+	eint0pend_val= __raw_readl(S3C64XX_EINT0PEND);
+	eint0pend_val |= (0x1 << 25) | (0x1 << 22) | (0x1 << 19) |
+		(0x1 << 17) | (0x1 << 11) | (0x1 << 10) | (0x1 << 9)| (0x1 << 6) |(0x1 << 5) | (0x1 << 4) | (0x1 << 1) | 0x1;
+	__raw_writel(eint0pend_val, S3C64XX_EINT0PEND);
+
+	eint0pend_val = (0x1 << 25) | (0x1 << 22) | (0x1 << 19) |
+		(0x1 << 17) | (0x1 << 11) | (0x1 << 10) |  (0x1 << 9)| (0x1 << 6) |(0x1 << 5) | (0x1 << 4) |(0x1 << 1) | 0x1;
+	__raw_writel(~eint0pend_val, S3C64XX_EINT0MASK);
+#endif
+	__raw_writel((0x0FFFFFFF & ~eint0pend_val), S3C_EINT_MASK);	
 
 	/* Alarm Wakeup Enable */
-#if 0
 	__raw_writel((__raw_readl(S3C_PWR_CFG) & ~(0x1 << 10)), S3C_PWR_CFG);
-#else
-	if (!ftm_sleep)
-		__raw_writel((__raw_readl(S3C_PWR_CFG) & ~(0x1 << 10)), S3C_PWR_CFG);
-	else {
-		pr_info("%s: RTC alarm is disabled\n", __func__);
-		__raw_writel((__raw_readl(S3C_PWR_CFG) | (0x1 << 10)), S3C_PWR_CFG);
-	}
-#endif
 }
-#endif
 EXPORT_SYMBOL(s3c_config_wakeup_source);
-
-#ifdef DUMP_GPIO_DEBUG_INFO
-    #include "s3c_debug_gpio.c"
-#endif
-
