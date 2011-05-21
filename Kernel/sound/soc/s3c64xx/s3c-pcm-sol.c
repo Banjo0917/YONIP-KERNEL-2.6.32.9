@@ -24,6 +24,15 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/dma-mapping.h>
+#include <linux/kernel.h>
+#include <linux/proc_fs.h>
+#include <linux/xmister.h>
+#include <asm/uaccess.h>
+#define PROCFS_NAME 		"soundfix"
+#define BUF_PROCFS_NAME 	"buffer"
+#define PROCFS_SIZE 		3
+
+
 
 //#include <sound/driver.h>
 #include <sound/core.h>
@@ -49,7 +58,9 @@
 #define ANDROID_BUF_SIZE	4096
 
 #define USE_LLI_INTERFACE	
-#undef USE_LLI_INTERFACE	
+#undef USE_LLI_INTERFACE
+
+unsigned int USE_LLI=1;
 
 //#define CONFIG_SND_DEBUG
 #ifdef CONFIG_SND_DEBUG
@@ -57,6 +68,15 @@
 #else
 #define s3cdbg(x...)
 #endif
+
+static struct proc_dir_entry *LLI_Proc_File;
+static struct proc_dir_entry *BUF_Proc_File;
+
+static char procfs_value='1';
+static unsigned long procfs_has_value = 1;
+static char procfs_buffer[PROCFS_SIZE];
+static unsigned long procfs_buffer_size = 0;
+
 
 static const struct snd_pcm_hardware s3c24xx_pcm_hardware = {
 	.info			= SNDRV_PCM_INFO_INTERLEAVED |
@@ -70,9 +90,9 @@ static const struct snd_pcm_hardware s3c24xx_pcm_hardware = {
 				    SNDRV_PCM_FMTBIT_S8,
 	.channels_min		= 2,
 	.channels_max		= 2,
-	.buffer_bytes_max	= 128*1024,
-	.period_bytes_min	= 128,
-	.period_bytes_max	= 16*1024,
+	.buffer_bytes_max	= 256*1024,
+	.period_bytes_min	= 32,
+	.period_bytes_max	= 128*1024,
 	.periods_min		= 2,
 	.periods_max		= 128,
 	.fifo_size		= 32,
@@ -91,14 +111,103 @@ struct s3c24xx_runtime_data {
 	struct dma_data			*dma_param;
 	struct dmac_conn_info	*dinfo;
 
-#ifdef USE_LLI_INTERFACE
+//#ifdef USE_LLI_INTERFACE
 	struct dmac_lli				*lli_data;
 	unsigned int 				num_lli;
-#endif
+//#endif
 };
 
 extern unsigned int ring_buf_index;
 extern unsigned int period_index;
+
+void set_lli(unsigned int value) {
+	USE_LLI=value;
+}
+
+int lli_procfile_read(char *buffer,
+	      char **buffer_location,
+	      off_t offset, int buffer_length, int *eof, void *data)
+{
+	int ret;
+	
+	if (offset > 0) {
+		/* we have finished to read, return 0 */
+		ret  = 0;
+	} else {
+		/* fill the buffer, return the buffer size */
+		memcpy(buffer, &procfs_value, procfs_has_value);
+		ret = procfs_has_value;
+	}
+
+	return ret;
+}
+
+int buf_procfile_read(char *buffer,
+	      char **buffer_location,
+	      off_t offset, int buffer_length, int *eof, void *data)
+{
+	int ret;
+	
+	if (offset > 0) {
+		/* we have finished to read, return 0 */
+		ret  = 0;
+	} else {
+		/* fill the buffer, return the buffer size */
+		memcpy(buffer, procfs_buffer, procfs_buffer_size);
+		ret = procfs_buffer_size;
+	}
+
+	return ret;
+}
+
+int lli_procfile_write(struct file *file, const char *buffer, unsigned long count,
+		   void *data)
+{
+	if ( buffer[0] < '0' || buffer[0] > '1' ) return procfs_has_value;
+	
+	procfs_has_value = count;
+	if (procfs_has_value > 1 ) {
+		procfs_has_value=1;
+	}
+	
+	/* write data to the buffer */
+	if ( copy_from_user(&procfs_value, buffer, procfs_has_value) ) {
+		printk(KERN_INFO "soundfix error: %c %s %lu\n", procfs_value, buffer, procfs_has_value);
+		return -EFAULT;
+	}
+
+	printk(KERN_INFO "soundfix new value: %c %d\n", procfs_value, procfs_value-'0');
+	
+	set_lli(procfs_value-'0');
+	
+	return procfs_has_value;
+}
+
+int buf_procfile_write(struct file *file, const char *buffer, unsigned long count,
+		   void *data)
+{
+	int temp;
+
+	temp=0;
+	if ( sscanf(buffer,"%d",&temp) < 1 ) return procfs_buffer_size;
+	if ( temp < 1 || temp > 99 ) return procfs_buffer_size;
+	
+	procfs_buffer_size = count;
+	if (procfs_buffer_size > PROCFS_SIZE ) {
+		procfs_buffer_size=PROCFS_SIZE;
+	}
+	
+	/* write data to the buffer */
+	if ( copy_from_user(procfs_buffer, buffer, procfs_buffer_size) ) {
+		printk(KERN_INFO "buffer_size error\n");
+		return -EFAULT;
+	}
+	
+	//sscanf(procfs_buffer,"%u",&ANDROID_BUF_NUM);
+	
+	return procfs_buffer_size;
+}
+
 
 /* s3c6410_pcm_dma_param_init
  *
@@ -201,18 +310,22 @@ static void s3c6410_audio_buffdone(void *id)
 
 	spin_lock(&prtd->lock);
 
-#ifdef USE_LLI_INTERFACE
+//#ifdef USE_LLI_INTERFACE
+if (USE_LLI) {
 	/* We don't have something to do */
 
-#else
+}
+//#else
+else {
 	if (prtd->state & ST_RUNNING) 
 		s3c24xx_pcm_enqueue(substream);
-#endif
+}
+//#endif
 
 	spin_unlock(&prtd->lock);
 }
 
-#ifdef USE_LLI_INTERFACE
+//#ifdef USE_LLI_INTERFACE
 static struct dmac_lli *s3c6410_audio_make_dmalli(struct snd_pcm_substream *substream, struct dma_data *dmadata, 
 												  unsigned int num_lli)
 {
@@ -249,7 +362,7 @@ static struct dmac_lli *s3c6410_audio_make_dmalli(struct snd_pcm_substream *subs
 
 	return dma_lli;
 }
-#endif
+//#endif
 
 static int s3c24xx_pcm_hw_params(struct snd_pcm_substream *substream, struct snd_pcm_hw_params *params)
 {
@@ -309,7 +422,8 @@ static int s3c24xx_pcm_hw_params(struct snd_pcm_substream *substream, struct snd
 		dma_data->dmac_ctrl1	= TSFR_SIZE2(prtd->dma_period);
 	}
 
-#ifdef USE_LLI_INTERFACE
+//#ifdef USE_LLI_INTERFACE
+if (USE_LLI) {
 	prtd->num_lli = runtime->dma_bytes / prtd->dma_period;
 
 	prtd->lli_data = dma_alloc_coherent(substream->pcm->card->dev, sizeof(struct dmac_lli) * prtd->num_lli, 
@@ -319,11 +433,12 @@ static int s3c24xx_pcm_hw_params(struct snd_pcm_substream *substream, struct snd
 
 	dma_data->dma_lli_v = (void *)prtd->lli_data;
 	prtd->lli_data = s3c6410_audio_make_dmalli(substream, dma_data, prtd->num_lli);
-
-#else
+}
+//#else
+else {
 	dma_data->dmac_ctrl0 |= TC_INT_ENABLE;
-
-#endif
+}
+//#endif
 
 	s3c6410_dmac_request(dma_data, substream);
 
@@ -483,11 +598,13 @@ static int s3c24xx_pcm_close(struct snd_pcm_substream *substream)
 
 	s3cdbg("Entered %s, prtd = %p\n", __FUNCTION__, prtd);
 
-#ifdef USE_LLI_INTERFACE
+//#ifdef USE_LLI_INTERFACE
+if (USE_LLI) {
 	if(prtd->lli_data)
 		dma_free_coherent(substream->pcm->card->dev, sizeof(struct dmac_lli) * prtd->num_lli, prtd->dma_param->dma_lli_v,
 						  prtd->dma_param->lli_addr);
-#endif
+}
+//#endif
 
 	s3c6410_dmac_free(prtd->dma_param);
 	s3c6410_pcm_dma_param_init(prtd);
@@ -612,7 +729,48 @@ struct snd_soc_platform s3c24xx_soc_platform = {
 EXPORT_SYMBOL_GPL(s3c24xx_soc_platform);
 
 static int __init s3c_soc_platform_init(void)
-{
+{ 
+	LLI_Proc_File = xm_add(PROCFS_NAME);
+	
+	if (LLI_Proc_File == NULL) {
+		xm_remove(PROCFS_NAME);
+		printk(KERN_ALERT "Error: Could not initialize /proc/xmister/%s\n",
+			PROCFS_NAME);
+	}
+	else {
+		LLI_Proc_File->read_proc  = lli_procfile_read;
+		LLI_Proc_File->write_proc = lli_procfile_write;
+		//LLI_Proc_File->owner 	  = THIS_MODULE;
+		LLI_Proc_File->mode 	  = S_IFREG | S_IRUGO;
+		LLI_Proc_File->uid 	  = 0;
+		LLI_Proc_File->gid 	  = 0;
+		LLI_Proc_File->size 	  = 37;
+
+		printk(KERN_INFO "/proc/xmister/%s created\n", PROCFS_NAME);
+	}
+
+	BUF_Proc_File = xm_add(BUF_PROCFS_NAME);
+	
+	if (BUF_Proc_File == NULL) {
+		xm_remove(BUF_PROCFS_NAME);
+		printk(KERN_ALERT "Error: Could not initialize /proc/xmister/%s\n",
+			BUF_PROCFS_NAME);
+	}
+	else {
+		BUF_Proc_File->read_proc  = buf_procfile_read;
+		BUF_Proc_File->write_proc = buf_procfile_write;
+		//BUF_Proc_File->owner 	  = THIS_MODULE;
+		BUF_Proc_File->mode 	  = S_IFREG | S_IRUGO;
+		BUF_Proc_File->uid 	  = 0;
+		BUF_Proc_File->gid 	  = 0;
+		BUF_Proc_File->size 	  = 37;
+
+		sprintf(procfs_buffer,"%d",CONFIG_ANDROID_BUF_NUM);
+		procfs_buffer_size=strlen(procfs_buffer);
+
+		printk(KERN_INFO "/proc/xmister/%s created\n", BUF_PROCFS_NAME);
+	}
+
     return snd_soc_register_platform(&s3c24xx_soc_platform);
 }
 
@@ -621,6 +779,10 @@ module_init(s3c_soc_platform_init);
 static void __exit s3c_soc_platform_exit(void)
 {
     snd_soc_unregister_platform(&s3c24xx_soc_platform);
+    xm_remove(PROCFS_NAME);
+    printk(KERN_INFO "/proc/xmister/%s removed\n", PROCFS_NAME);
+    xm_remove(BUF_PROCFS_NAME);
+    printk(KERN_INFO "/proc/xmister/%s removed\n", BUF_PROCFS_NAME);
 }
 
 module_exit(s3c_soc_platform_exit);
