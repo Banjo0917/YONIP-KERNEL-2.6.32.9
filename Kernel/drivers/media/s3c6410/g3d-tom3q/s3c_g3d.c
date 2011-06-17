@@ -55,7 +55,7 @@
 /* Various definitions */
 #define G3D_MINOR  		249
 #define G3D_SFR_BASE		0x72000000
-#define G3D_SFR_SIZE		0x80000
+#define G3D_SFR_SIZE		0x80000 //80000
 #define G3D_IDLE_TIME_SECS	10
 #define G3D_TIMEOUT		1000
 
@@ -574,6 +574,7 @@ static int s3c_g3d_suspend(struct platform_device *pdev, pm_message_t state)
 	g3d_flush(data, G3D_FGGB_PIPESTAT_MSK);
 	g3d_flush_caches(data);
 	g3d_do_power_down(data);
+        data->owner = 0;
 #endif
 	return 0;
 }
